@@ -781,6 +781,7 @@
       const [editingUser, setEditingUser] = useState(null);
       const [selectedCashFlowIds, setSelectedCashFlowIds] = useState([]);
       const [showMobileMenu, setShowMobileMenu] = useState(false);
+      const [cashFlowView, setCashFlowView] = useState('open'); // 'open' | 'all'
 
       const handleFileUpload = async (e, id) => {
         const file = e.target.files[0];
@@ -1754,99 +1755,140 @@
                     </Card>
                   </div>
                     <div className="lg:col-span-2 space-y-6">
-                    <Card 
-                      title="Lançamentos em Aberto" 
-                      subtitle="Movimentações do mês vigente"
-                      action={
-                        <div className="flex gap-2">
-                          {selectedCashFlowIds.length > 0 && (
-                            <Button onClick={handlePrintSelectedCashFlow} variant="success" icon="file-text" className="py-1.5 px-3 whitespace-nowrap">
-                              Resumo Selecionados ({selectedCashFlowIds.length})
-                            </Button>
-                          )}
-                        </div>
-                      }
-                    >
-                      <div className="overflow-x-auto -mx-5">
-                        <table className="w-full custom-table">
-                          <thead>
-                            <tr>
-                              <th className="w-10">
-                                <input 
-                                  type="checkbox" 
-                                  className="w-4 h-4 rounded border-[#dee2e6]" 
-                                  onChange={(e) => {
-                                    const open = cashflow.filter(i => i.status === 'ABERTO');
-                                    if (e.target.checked) setSelectedCashFlowIds(open.map(i => i.id));
-                                    else setSelectedCashFlowIds([]);
-                                  }}
-                                  checked={selectedCashFlowIds.length > 0 && selectedCashFlowIds.length === cashflow.filter(i => i.status === 'ABERTO').length}
-                                />
-                              </th>
-                              <th>Data</th>
-                              <th>Descrição</th>
-                              <th>Tipo</th>
-                              <th>Valor</th>
-                              <th className="text-right">Ações</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {cashflow.filter(i => i.status === 'ABERTO').sort((a,b) => b.id.localeCompare(a.id)).map(i => (
-                              <tr key={i.id} className="hover:bg-[#f8f9fa] transition-all group">
-                                <td className="text-center">
-                                  <input 
-                                    type="checkbox" 
-                                    className="w-4 h-4 rounded border-[#dee2e6] text-[#005c46] focus:ring-[#005c46]" 
-                                    checked={selectedCashFlowIds.includes(i.id)} 
-                                    onChange={(e) => {
-                                      if (e.target.checked) setSelectedCashFlowIds([...selectedCashFlowIds, i.id]);
-                                      else setSelectedCashFlowIds(selectedCashFlowIds.filter(id => id !== i.id));
-                                    }} 
-                                  />
-                                </td>
-                                <td className="text-[#6c757d] font-medium">{i.data}</td>
-                                <td className="font-bold text-[#212529]">{i.descricao}</td>
-                                <td>
-                                  <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase ${i.tipo === 'ENTRADA' ? 'bg-[#28a745]/10 text-[#28a745]' : 'bg-[#dc3545]/10 text-[#dc3545]'}`}>
-                                    {i.tipo}
-                                  </span>
-                                </td>
-                                <td className={`font-bold ${i.tipo === 'ENTRADA' ? 'text-[#28a745]' : 'text-[#dc3545]'}`}>
-                                  R$ {Number(i.valor).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
-                                </td>
-                                <td className="text-right">
-                                  <div className="flex justify-end gap-1">
-                                    {i.anexo ? (
-                                      <a href={i.anexo} target="_blank" rel="noopener noreferrer" className="p-2 text-[#005c46] hover:bg-[#005c46]/10 rounded-lg transition-all" title="Ver Comprovante">
-                                        <Icon name="paperclip" size={16} />
-                                      </a>
-                                    ) : (
-                                      <button onClick={() => document.getElementById(`file-upload-${i.id}`).click()} className="p-2 text-[#6c757d] hover:text-[#005c46] hover:bg-[#005c46]/10 rounded-lg transition-all" title="Anexar Comprovante">
-                                        <Icon name="upload" size={16} />
-                                      </button>
-                                    )}
-                                    <input 
-                                      type="file" 
-                                      id={`file-upload-${i.id}`} 
-                                      className="hidden" 
-                                      onChange={(e) => handleFileUpload(e, i.id)} 
+                    {(() => {
+                      const visibleEntries = cashflow
+                        .filter(i => cashFlowView === 'all' ? true : i.status === 'ABERTO')
+                        .sort((a, b) => b.id.localeCompare(a.id));
+                      const allSelected = visibleEntries.length > 0 && visibleEntries.every(i => selectedCashFlowIds.includes(i.id));
+
+                      return (
+                        <Card
+                          title={cashFlowView === 'all' ? 'Todos os Lançamentos' : 'Lançamentos em Aberto'}
+                          subtitle={cashFlowView === 'all' ? 'Inclui períodos já fechados (somente leitura)' : 'Movimentações do mês vigente'}
+                          action={
+                            <div className="flex flex-wrap items-center gap-2">
+                              <div className="flex bg-[#dee2e6] p-1 rounded-xl">
+                                <button
+                                  onClick={() => { setCashFlowView('open'); setSelectedCashFlowIds([]); }}
+                                  className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all ${
+                                    cashFlowView === 'open' ? 'bg-white text-[#005c46] shadow-sm' : 'text-[#6c757d] hover:text-[#212529]'
+                                  }`}
+                                >
+                                  Em Aberto
+                                </button>
+                                <button
+                                  onClick={() => { setCashFlowView('all'); setSelectedCashFlowIds([]); }}
+                                  className={`px-3 py-1.5 rounded-lg text-[10px] font-bold uppercase tracking-wider transition-all ${
+                                    cashFlowView === 'all' ? 'bg-white text-[#005c46] shadow-sm' : 'text-[#6c757d] hover:text-[#212529]'
+                                  }`}
+                                >
+                                  Todos
+                                </button>
+                              </div>
+                              {selectedCashFlowIds.length > 0 && (
+                                <Button onClick={handlePrintSelectedCashFlow} variant="success" icon="file-text" className="py-1.5 px-3 whitespace-nowrap">
+                                  Balanço Parcial ({selectedCashFlowIds.length})
+                                </Button>
+                              )}
+                            </div>
+                          }
+                        >
+                          <div className="overflow-x-auto -mx-5">
+                            <table className="w-full custom-table">
+                              <thead>
+                                <tr>
+                                  <th className="w-10">
+                                    <input
+                                      type="checkbox"
+                                      className="w-4 h-4 rounded border-[#dee2e6]"
+                                      onChange={(e) => {
+                                        if (e.target.checked) setSelectedCashFlowIds(visibleEntries.map(i => i.id));
+                                        else setSelectedCashFlowIds([]);
+                                      }}
+                                      checked={allSelected}
                                     />
-                                    <button onClick={() => askConfirm("Excluir Lançamento", `Excluir "${i.descricao}"?`, async () => { await run('deleteCashFlowEntry', i.id); loadAll(); showToast("Lançamento excluído."); setConfirm(null); })} className="p-2 text-[#6c757d] hover:text-[#dc3545] hover:bg-[#dc3545]/10 rounded-lg transition-all" title="Excluir">
-                                      <Icon name="trash-2" size={16} />
-                                    </button>
-                                  </div>
-                                </td>
-                              </tr>
-                            ))}
-                            {cashflow.filter(i => i.status === 'ABERTO').length === 0 && (
-                              <tr>
-                                <td colSpan="5" className="text-center py-12 text-slate-400 italic text-sm">Nenhum lançamento em aberto.</td>
-                              </tr>
-                            )}
-                          </tbody>
-                        </table>
-                      </div>
-                    </Card>
+                                  </th>
+                                  <th>Data</th>
+                                  <th>Descrição</th>
+                                  <th>Tipo</th>
+                                  <th>Valor</th>
+                                  {cashFlowView === 'all' && <th>Situação</th>}
+                                  <th className="text-right">Ações</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {visibleEntries.map(i => {
+                                  const isClosed = i.status === 'FECHADO';
+                                  return (
+                                    <tr key={i.id} className={`transition-all group ${isClosed ? 'bg-[#f8f9fa]/60' : 'hover:bg-[#f8f9fa]'}`}>
+                                      <td className="text-center">
+                                        <input
+                                          type="checkbox"
+                                          className="w-4 h-4 rounded border-[#dee2e6] text-[#005c46] focus:ring-[#005c46]"
+                                          checked={selectedCashFlowIds.includes(i.id)}
+                                          onChange={(e) => {
+                                            if (e.target.checked) setSelectedCashFlowIds([...selectedCashFlowIds, i.id]);
+                                            else setSelectedCashFlowIds(selectedCashFlowIds.filter(id => id !== i.id));
+                                          }}
+                                        />
+                                      </td>
+                                      <td className="text-[#6c757d] font-medium">{i.data}</td>
+                                      <td className="font-bold text-[#212529]">{i.descricao}</td>
+                                      <td>
+                                        <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase ${i.tipo === 'ENTRADA' ? 'bg-[#28a745]/10 text-[#28a745]' : 'bg-[#dc3545]/10 text-[#dc3545]'}`}>
+                                          {i.tipo}
+                                        </span>
+                                      </td>
+                                      <td className={`font-bold ${i.tipo === 'ENTRADA' ? 'text-[#28a745]' : 'text-[#dc3545]'}`}>
+                                        R$ {Number(i.valor).toLocaleString('pt-BR', { minimumFractionDigits: 2 })}
+                                      </td>
+                                      {cashFlowView === 'all' && (
+                                        <td>
+                                          <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase border ${isClosed ? 'bg-[#dee2e6] text-[#6c757d] border-[#dee2e6]' : 'bg-[#f58220]/10 text-[#f58220] border-[#f58220]/20'}`}>
+                                            {isClosed ? 'Fechado' : 'Aberto'}
+                                          </span>
+                                        </td>
+                                      )}
+                                      <td className="text-right">
+                                        <div className="flex justify-end gap-1">
+                                          {i.anexo ? (
+                                            <a href={i.anexo} target="_blank" rel="noopener noreferrer" className="p-2 text-[#005c46] hover:bg-[#005c46]/10 rounded-lg transition-all" title="Ver Comprovante">
+                                              <Icon name="paperclip" size={16} />
+                                            </a>
+                                          ) : !isClosed ? (
+                                            <button onClick={() => document.getElementById(`file-upload-${i.id}`).click()} className="p-2 text-[#6c757d] hover:text-[#005c46] hover:bg-[#005c46]/10 rounded-lg transition-all" title="Anexar Comprovante">
+                                              <Icon name="upload" size={16} />
+                                            </button>
+                                          ) : null}
+                                          <input
+                                            type="file"
+                                            id={`file-upload-${i.id}`}
+                                            className="hidden"
+                                            onChange={(e) => handleFileUpload(e, i.id)}
+                                          />
+                                          {!isClosed && (
+                                            <button onClick={() => askConfirm("Excluir Lançamento", `Excluir "${i.descricao}"?`, async () => { await run('deleteCashFlowEntry', i.id); loadAll(); showToast("Lançamento excluído."); setConfirm(null); })} className="p-2 text-[#6c757d] hover:text-[#dc3545] hover:bg-[#dc3545]/10 rounded-lg transition-all" title="Excluir">
+                                              <Icon name="trash-2" size={16} />
+                                            </button>
+                                          )}
+                                        </div>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                                {visibleEntries.length === 0 && (
+                                  <tr>
+                                    <td colSpan={cashFlowView === 'all' ? 7 : 6} className="text-center py-12 text-slate-400 italic text-sm">
+                                      {cashFlowView === 'all' ? 'Nenhum lançamento registrado.' : 'Nenhum lançamento em aberto.'}
+                                    </td>
+                                  </tr>
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </Card>
+                      );
+                    })()}
                   </div>
                 </div>
               )}
@@ -2021,7 +2063,7 @@
                                         <h4 className="text-[10px] font-bold text-[#6c757d] uppercase tracking-widest">Detalhamento do Período</h4>
                                         {selectedCashFlowIds.length > 0 && (
                                           <Button onClick={handlePrintSelectedCashFlow} variant="success" icon="file-text" className="py-1 px-3 text-[10px]">
-                                            Resumo Selecionados ({selectedCashFlowIds.length})
+                                            Balanço Parcial ({selectedCashFlowIds.length})
                                           </Button>
                                         )}
                                       </div>
