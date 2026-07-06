@@ -1,0 +1,769 @@
+/**
+ * @license
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+function doGet() {
+  return HtmlService.createHtmlOutputFromFile('Index')
+    .setTitle('Gestor de Associados e Boletos PIX')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL)
+    .addMetaTag('viewport', 'width=device-width, initial-scale=1');
+}
+
+// --- Funções de Banco de Dados (Google Sheets) ---
+
+function getDbSheet(name) {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let sheet = ss.getSheetByName(name);
+  if (!sheet) {
+    sheet = ss.insertSheet(name);
+    if (name === 'Config') {
+      sheet.appendRow(['Nome', 'CNPJ', 'ChavePIX', 'Logo', 'Cidade']);
+      sheet.appendRow(['Associação Exemplo', '00.000.000/0001-00', 'financeiro@exemplo.com', '', 'SAO PAULO']);
+    } else if (name === 'Associados') {
+      sheet.appendRow(['ID', 'Nome', 'CPF', 'Piloto', 'Logradouro', 'Numero', 'CEP', 'Cidade', 'UF']);
+    } else if (name === 'Parcelas') {
+      sheet.appendRow(['ID', 'MemberID', 'Descricao', 'Valor', 'Vencimento', 'Parcela', 'TotalParcelas', 'Status', 'DataCriacao']);
+    } else if (name === 'FluxoCaixa') {
+      sheet.appendRow(['ID', 'Data', 'Descricao', 'Valor', 'Tipo', 'Status', 'MesReferencia', 'Anexo']);
+    } else if (name === 'Fechamentos') {
+      sheet.appendRow(['Mes', 'Ano', 'DataFechamento', 'Usuario']);
+    } else if (name === 'Usuarios') {
+      sheet.appendRow(['ID', 'Usuario', 'Senha', 'Nome', 'Role']);
+      sheet.appendRow([new Date().getTime(), 'TESOUREIRO', 'cortaessa', 'Tesoureiro Master', 'ADMIN']);
+    }
+  }
+  return sheet;
+}
+
+function getAssociation() {
+  const sheet = getDbSheet('Config');
+  const data = sheet.getRange(2, 1, 1, 5).getValues()[0];
+  return { 
+    name: String(data[0] || ""), 
+    cnpj: String(data[1] || ""), 
+    pix_key: String(data[2] || ""),
+    logo: String(data[3] || ""),
+    city: String(data[4] || "SAO PAULO")
+  };
+}
+
+function saveAssociation(data) {
+  const sheet = getDbSheet('Config');
+  sheet.getRange(2, 1, 1, 5).setValues([[data.name, data.cnpj, data.pix_key, data.logo, data.city]]);
+  return { success: true };
+}
+
+function getMembers() {
+  const sheet = getDbSheet('Associados');
+  const rows = sheet.getDataRange().getValues();
+  if (rows.length <= 1) return [];
+  const headers = rows[0];
+  return rows.slice(1).map(row => {
+    let obj = {};
+    headers.forEach((h, i) => {
+      if (h && typeof h === 'string') {
+        obj[h.toLowerCase()] = row[i];
+      }
+    });
+    return obj;
+  });
+}
+
+function saveMember(data) {
+  const sheet = getDbSheet('Associados');
+  const id = new Date().getTime(); // Simple ID
+  sheet.appendRow([id, data.name, data.cpf, data.pilot_number, data.street, data.number, data.zip_code, data.city, data.state]);
+  return { success: true, id: id };
+}
+
+function updateMember(data) {
+  const sheet = getDbSheet('Associados');
+  const rows = sheet.getDataRange().getValues();
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i][0] == data.id) {
+      // ID, Nome, CPF, Piloto, Logradouro, Numero, CEP, Cidade, UF
+      sheet.getRange(i + 1, 2).setValue(data.name);
+      sheet.getRange(i + 1, 3).setValue(data.cpf);
+      // Keep other fields or update if provided
+      break;
+    }
+  }
+  return { success: true };
+}
+
+function deleteMember(id) {
+  const sheet = getDbSheet('Associados');
+  const rows = sheet.getDataRange().getValues();
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i][0] == id) {
+      sheet.deleteRow(i + 1);
+      break;
+    }
+  }
+  return { success: true };
+}
+
+function getInstallments() {
+  const sheet = getDbSheet('Parcelas');
+  const rows = sheet.getDataRange().getValues();
+  if (rows.length <= 1) return [];
+  
+  const headers = rows[0];
+  const members = getMembers();
+  const timeZone = Session.getScriptTimeZone();
+  
+  return rows.slice(1).map(row => {
+    let obj = {};
+    headers.forEach((h, i) => {
+      if (h && typeof h === 'string') {
+        let key = h.toLowerCase();
+        let val = row[i];
+        
+        // Converte Datas para String (evita erro no React)
+        if (val instanceof Date) {
+          val = Utilities.formatDate(val, timeZone, "dd/MM/yyyy");
+        }
+        
+        if (key === 'datacriacao') key = 'created_at';
+        if (key === 'totalparcelas') key = 'total_installments';
+        if (key === 'parcela') key = 'installment_number';
+        if (key === 'vencimento') key = 'due_date';
+        if (key === 'valor') val = Number(val) || 0;
+        
+        obj[key] = val;
+      }
+    });
+    
+    const member = members.find(m => m.id == obj.memberid);
+    obj.member_name = member ? member.nome : 'N/A';
+    obj.member_cpf = member ? member.cpf : 'N/A';
+    return obj;
+  });
+}
+
+function generateInstallments(data) {
+  const sheet = getDbSheet('Parcelas');
+  const amountPerInstallment = parseFloat((data.total_amount / data.num_installments).toFixed(2));
+  
+  // Ajuste de data para evitar fuso horário errado
+  const parts = data.first_due_date.split('-');
+  const startDate = new Date(parts[0], parts[1] - 1, parts[2]);
+  
+  const now = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm");
+
+  for (let i = 0; i < data.num_installments; i++) {
+    const dueDate = new Date(startDate);
+    dueDate.setMonth(startDate.getMonth() + i);
+    const id = "P" + (new Date().getTime() + i);
+    
+    sheet.appendRow([
+      id, 
+      data.member_id, 
+      data.description, 
+      amountPerInstallment, 
+      dueDate, 
+      i + 1, 
+      data.num_installments, 
+      'PENDING', 
+      now
+    ]);
+  }
+  return { success: true };
+}
+
+function generateStandardPackage(data) {
+  const sheet = getDbSheet('Parcelas');
+  const now = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "dd/MM/yyyy HH:mm");
+  
+  const members = data.bulk ? getMembers() : [{ id: data.member_id }];
+  
+  const totalAmount = parseFloat(data.total_amount);
+  const discountAmount = parseFloat(data.discount_amount || 0);
+  const cashAmount = totalAmount - discountAmount;
+  const installmentAmount = parseFloat((totalAmount / 2).toFixed(2));
+  
+  const parts1 = data.first_due_date.split('-');
+  const startDate = new Date(parts1[0], parts1[1] - 1, parts1[2]);
+
+  const parts2 = data.second_due_date.split('-');
+  const secondDate = new Date(parts2[0], parts2[1] - 1, parts2[2]);
+
+  members.forEach(member => {
+    const mId = member.id;
+    const baseDesc = data.description;
+    
+    // 1. À Vista
+    const idVista = "PV" + (new Date().getTime() + Math.random());
+    sheet.appendRow([idVista, mId, baseDesc + " - À VISTA", cashAmount, startDate, 1, 1, 'PENDING', now]);
+    
+    // 2. Parcela 1/2
+    const id1 = "P1" + (new Date().getTime() + Math.random());
+    sheet.appendRow([id1, mId, baseDesc + " - PARCELA 1/2", installmentAmount, startDate, 1, 2, 'PENDING', now]);
+    
+    // 3. Parcela 2/2
+    const id2 = "P2" + (new Date().getTime() + Math.random());
+    sheet.appendRow([id2, mId, baseDesc + " - PARCELA 2/2", installmentAmount, secondDate, 2, 2, 'PENDING', now]);
+  });
+  
+  return { success: true };
+}
+
+function updateInstallmentStatus(id, status, skipCashFlow = false) {
+  const sheet = getDbSheet('Parcelas');
+  const rows = sheet.getDataRange().getValues();
+  let instData = null;
+  let rowIndex = -1;
+
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i][0] === id) {
+      sheet.getRange(i + 1, 8).setValue(status);
+      instData = {
+        id: rows[i][0],
+        memberId: rows[i][1],
+        description: rows[i][2],
+        amount: rows[i][3],
+        dueDate: rows[i][4],
+        member_name: "" // Will be filled if needed
+      };
+      rowIndex = i + 1;
+      break;
+    }
+  }
+
+  if (instData && status === 'PAID') {
+    // Buscar o nome do associado para o histórico
+    const members = getMembers();
+    const member = members.find(m => m.id == instData.memberId);
+    const memberName = member ? member.nome : "N/A";
+
+    // 1. Registrar no Fluxo de Caixa (se não for para pular)
+    if (!skipCashFlow) {
+      const date = new Date();
+      const mesReferencia = Utilities.formatDate(date, Session.getScriptTimeZone(), "MM/yyyy");
+      
+      // Verificar se o mês está fechado
+      const closedMonths = getClosedMonths();
+      if (closedMonths.some(m => m.mes_ano === mesReferencia)) {
+        throw new Error("Não é possível registrar pagamento em um mês já fechado (" + mesReferencia + ").");
+      }
+
+      saveCashFlowEntry({
+        description: "RECEBIMENTO: " + memberName,
+        amount: instData.amount,
+        type: 'ENTRADA',
+        date: Utilities.formatDate(date, Session.getScriptTimeZone(), "yyyy-MM-dd")
+      });
+    }
+
+    // 2. Se for À VISTA, baixar as outras parcelas do mesmo pacote
+    if (instData.description.includes(" - À VISTA")) {
+      const baseDesc = instData.description.replace(" - À VISTA", "");
+      for (let i = 1; i < rows.length; i++) {
+        // Se for o mesmo membro, mesma descrição base, mas NÃO for o boleto à vista e estiver pendente
+        if (rows[i][1] === instData.memberId && 
+            rows[i][2].startsWith(baseDesc + " - PARCELA") && 
+            rows[i][7] === 'PENDING') {
+          sheet.getRange(i + 1, 8).setValue('BAIXADO');
+        }
+      }
+    }
+  }
+
+  return { success: true };
+}
+
+function deleteInstallment(id) {
+  const sheet = getDbSheet('Parcelas');
+  const rows = sheet.getDataRange().getValues();
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i][0] == id) {
+      sheet.deleteRow(i + 1);
+      break;
+    }
+  }
+  return { success: true };
+}
+
+// --- Funções de Fluxo de Caixa ---
+
+function getCashFlow() {
+  const sheet = getDbSheet('FluxoCaixa');
+  const rows = sheet.getDataRange().getValues();
+  if (rows.length <= 1) return [];
+  const headers = rows[0];
+  const timeZone = Session.getScriptTimeZone();
+  
+  return rows.slice(1).map(row => {
+    let obj = {};
+    headers.forEach((h, i) => {
+      if (h && typeof h === 'string') {
+        let key = h.toLowerCase();
+        let val = row[i];
+        
+        if (key === 'status' || key === 'tipo') {
+          val = String(val || "").trim().toUpperCase();
+        }
+
+        if (val instanceof Date) {
+          // Se for a coluna MesReferencia, formata apenas MM/yyyy para consistência
+          if (key === 'mesreferencia') {
+            val = Utilities.formatDate(val, timeZone, "MM/yyyy");
+          } else {
+            val = Utilities.formatDate(val, timeZone, "dd/MM/yyyy");
+          }
+        } else if (key === 'mesreferencia' && val) {
+          // Garante que strings como "1/2024" virem "01/2024"
+          const parts = String(val).split('/');
+          if (parts.length === 2) {
+            val = parts[0].padStart(2, '0') + '/' + parts[1];
+          }
+        }
+        obj[key] = val;
+      }
+    });
+    return obj;
+  });
+}
+
+function saveCashFlowEntry(data) {
+  const sheet = getDbSheet('FluxoCaixa');
+  const id = "CF" + new Date().getTime();
+  const date = data.date ? new Date(data.date) : new Date();
+  const mesReferencia = Utilities.formatDate(date, Session.getScriptTimeZone(), "MM/yyyy");
+  
+  // Verificar se o mês está fechado
+  const closedMonths = getClosedMonths();
+  const isClosed = closedMonths.some(m => m.mes_ano === mesReferencia);
+  if (isClosed) {
+    throw new Error("Não é possível adicionar lançamentos em um mês já fechado (" + mesReferencia + ").");
+  }
+
+  // Garantir que a coluna de MesReferencia seja tratada como texto
+  const lastRow = sheet.getLastRow();
+  sheet.getRange(lastRow + 1, 7).setNumberFormat("@");
+
+  sheet.appendRow([
+    id, 
+    data.date || date, 
+    data.description, 
+    Number(data.amount), 
+    data.type, // ENTRADA ou SAIDA
+    'ABERTO',
+    mesReferencia
+  ]);
+  return { success: true };
+}
+
+function deleteCashFlowEntry(id) {
+  const sheet = getDbSheet('FluxoCaixa');
+  const rows = sheet.getDataRange().getValues();
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i][0] == id) {
+      const mesReferencia = rows[i][6];
+      const closedMonths = getClosedMonths();
+      if (closedMonths.some(m => m.mes_ano === mesReferencia)) {
+        throw new Error("Não é possível excluir lançamentos de um mês já fechado.");
+      }
+      sheet.deleteRow(i + 1);
+      break;
+    }
+  }
+  return { success: true };
+}
+
+function getClosedMonths() {
+  const sheet = getDbSheet('Fechamentos');
+  const rows = sheet.getDataRange().getValues();
+  if (rows.length <= 1) return [];
+  
+  const results = [];
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i];
+    if (!row[0] && row[0] !== 0) continue; 
+    
+    // Tenta converter para número, lidando com possíveis formatos de data do Sheets
+    let mes = row[0];
+    let ano = row[1];
+    
+    if (mes instanceof Date) {
+      ano = mes.getFullYear();
+      mes = mes.getMonth() + 1;
+    } else {
+      mes = parseInt(mes);
+      ano = parseInt(ano);
+    }
+    
+    if (isNaN(mes) || isNaN(ano)) continue;
+    
+    // Garante que data_fechamento seja algo que o JS entenda
+    let dataFechamento = row[2];
+    if (dataFechamento instanceof Date) {
+      dataFechamento = dataFechamento.toISOString();
+    }
+    
+    results.push({
+      mes: mes,
+      ano: ano,
+      mes_ano: (String(mes).padStart(2, '0')) + "/" + ano,
+      data_fechamento: dataFechamento,
+      usuario: row[3] || "SISTEMA"
+    });
+  }
+  return results;
+}
+
+function closeMonth(month, year) {
+  const targetMonth = parseInt(month);
+  const targetYear = parseInt(year);
+  const mesAno = (String(targetMonth).padStart(2, '0')) + "/" + targetYear;
+  const timeZone = Session.getScriptTimeZone();
+  
+  // 1. Verificar se já está fechado
+  const closed = getClosedMonths();
+  if (closed.some(m => m.mes_ano === mesAno)) {
+    return { success: false, message: "Este mês já está fechado." };
+  }
+
+  // 2. Verificar se o mês anterior está fechado (se houver dados nele)
+  let prevMonth = targetMonth - 1;
+  let prevYear = targetYear;
+  if (prevMonth === 0) {
+    prevMonth = 12;
+    prevYear--;
+  }
+  const prevMesAno = (String(prevMonth).padStart(2, '0')) + "/" + prevYear;
+  
+  const cashFlow = getCashFlow();
+  const hasPrevData = cashFlow.some(e => e.mesreferencia === prevMesAno);
+  if (hasPrevData && !closed.some(m => m.mes_ano === prevMesAno)) {
+    return { success: false, message: "Atenção: O mês anterior (" + prevMesAno + ") ainda não foi fechado. Feche os meses em ordem cronológica." };
+  }
+
+  // 3. Marcar lançamentos do mês como FECHADO (Batch Update)
+  const sheet = getDbSheet('FluxoCaixa');
+  const range = sheet.getDataRange();
+  const values = range.getValues();
+  let updatedCount = 0;
+  let totalEntriesForMonth = 0;
+
+  for (let i = 1; i < values.length; i++) {
+    let rowMesRef = values[i][6]; // Coluna MesReferencia
+    let rowStatus = String(values[i][5] || "").trim().toUpperCase();
+    
+    // Normalizar MesReferencia para comparação
+    if (rowMesRef instanceof Date) {
+      rowMesRef = Utilities.formatDate(rowMesRef, timeZone, "MM/yyyy");
+    } else {
+      rowMesRef = String(rowMesRef || "").trim();
+      // Normalizar formatos como "1/2024" para "01/2024"
+      const parts = rowMesRef.split('/');
+      if (parts.length === 2) {
+        rowMesRef = parts[0].padStart(2, '0') + '/' + parts[1];
+      }
+    }
+
+    if (rowMesRef === mesAno) {
+      totalEntriesForMonth++;
+      if (rowStatus === 'ABERTO') {
+        values[i][5] = 'FECHADO'; // Coluna Status
+        updatedCount++;
+      }
+    }
+  }
+
+  if (updatedCount > 0) {
+    range.setValues(values);
+    SpreadsheetApp.flush();
+  }
+
+  // 4. Registrar o fechamento
+  const fechamentosSheet = getDbSheet('Fechamentos');
+  fechamentosSheet.appendRow([targetMonth, targetYear, new Date(), "SISTEMA"]);
+  SpreadsheetApp.flush();
+
+  return { 
+    success: true, 
+    updated: updatedCount, 
+    total: totalEntriesForMonth,
+    mes_ano: mesAno
+  };
+}
+
+function uploadFileToDrive(base64Data, fileName) {
+  const folderName = "Anexos_Sistema_Gestao";
+  let folder;
+  const folders = DriveApp.getFoldersByName(folderName);
+  
+  if (folders.hasNext()) {
+    folder = folders.next();
+  } else {
+    folder = DriveApp.createFolder(folderName);
+  }
+  
+  const contentType = base64Data.substring(5, base64Data.indexOf(';'));
+  const bytes = Utilities.base64Decode(base64Data.split(',')[1]);
+  const blob = Utilities.newBlob(bytes, contentType, fileName);
+  const file = folder.createFile(blob);
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  
+  return {
+    url: file.getUrl(),
+    id: file.getId(),
+    name: fileName
+  };
+}
+
+function updateCashFlowAttachment(id, attachmentUrl) {
+  const sheet = getDbSheet('FluxoCaixa');
+  const rows = sheet.getDataRange().getValues();
+  const headers = rows[0];
+  const anexoCol = headers.indexOf('Anexo') + 1;
+  
+  if (anexoCol === 0) {
+    // Se a coluna não existe, adiciona o cabeçalho
+    sheet.getRange(1, headers.length + 1).setValue('Anexo');
+    return updateCashFlowAttachment(id, attachmentUrl); // Recursivo uma vez para pegar a nova coluna
+  }
+
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i][0] == id) {
+      sheet.getRange(i + 1, anexoCol).setValue(attachmentUrl);
+      break;
+    }
+  }
+  return { success: true };
+}
+
+function getAttachmentsBase64(urls) {
+  const results = [];
+  urls.forEach(url => {
+    if (!url) return;
+    try {
+      const match = url.match(/\/d\/([^\/]+)/);
+      if (match && match[1]) {
+        const fileId = match[1];
+        const file = DriveApp.getFileById(fileId);
+        const blob = file.getBlob();
+        const base64 = Utilities.base64Encode(blob.getBytes());
+        results.push({
+          url: url,
+          base64: `data:${blob.getContentType()};base64,${base64}`,
+          contentType: blob.getContentType(),
+          name: file.getName()
+        });
+      }
+    } catch (e) {
+      console.error("Erro ao buscar anexo: " + url, e);
+    }
+  });
+  return results;
+}
+
+// --- Funções de Usuários ---
+
+function getUsers() {
+  const sheet = getDbSheet('Usuarios');
+  const rows = sheet.getDataRange().getValues();
+  if (rows.length <= 1) return [];
+  const headers = rows[0];
+  return rows.slice(1).map(row => {
+    let obj = {};
+    headers.forEach((h, i) => {
+      if (h && typeof h === 'string') {
+        obj[h.toLowerCase()] = row[i];
+      }
+    });
+    return obj;
+  });
+}
+
+function authenticate(username, password) {
+  const users = getUsers();
+  const user = users.find(u => String(u.usuario).toUpperCase() === String(username).toUpperCase() && String(u.senha) === String(password));
+  if (user) {
+    return { success: true, user: { id: user.id, username: user.usuario, name: user.nome, role: user.role } };
+  }
+  return { success: false, message: "Usuário ou senha incorretos" };
+}
+
+function saveUser(data) {
+  const sheet = getDbSheet('Usuarios');
+  if (data.id) {
+    const rows = sheet.getDataRange().getValues();
+    for (let i = 1; i < rows.length; i++) {
+      if (rows[i][0] == data.id) {
+        sheet.getRange(i + 1, 2).setValue(data.username);
+        sheet.getRange(i + 1, 3).setValue(data.password);
+        sheet.getRange(i + 1, 4).setValue(data.name);
+        sheet.getRange(i + 1, 5).setValue(data.role);
+        break;
+      }
+    }
+  } else {
+    const id = new Date().getTime();
+    sheet.appendRow([id, data.username, data.password, data.name, data.role || 'USER']);
+  }
+  return { success: true };
+}
+
+function deleteUser(id) {
+  const sheet = getDbSheet('Usuarios');
+  const rows = sheet.getDataRange().getValues();
+  // Prevent deleting the last admin if possible, but for now simple delete
+  for (let i = 1; i < rows.length; i++) {
+    if (rows[i][0] == id) {
+      sheet.deleteRow(i + 1);
+      break;
+    }
+  }
+  return { success: true };
+}
+
+// --- Funções de Conciliação Bancária ---
+
+function processOFX(ofxContent) {
+  try {
+    const transactions = [];
+    // Regex flexível para capturar blocos de transação, lidando com falta de tags de fechamento
+    const trnRegex = /<STMTTRN>([\s\S]*?)(?=<STMTTRN>|<\/STMTTRN>|<\/BANKTRANLIST>|$)/gi;
+    let match;
+
+    while ((match = trnRegex.exec(ofxContent)) !== null) {
+      const content = match[1];
+      
+      // Função auxiliar para extrair valores de tags OFX de forma segura
+      const getTagValue = (tag) => {
+        const regex = new RegExp("<" + tag + ">([^<\\r\\n]*)", "i");
+        const m = content.match(regex);
+        return m ? m[1].trim() : "";
+      };
+
+      const type = getTagValue("TRNTYPE");
+      const dateStr = getTagValue("DTPOSTED");
+      const amount = parseFloat(getTagValue("TRNAMT").replace(",", ".") || "0");
+      const memo = getTagValue("MEMO") || getTagValue("NAME") || "";
+      
+      let formattedDate = "";
+      if (dateStr.length >= 8) {
+        formattedDate = `${dateStr.substring(6, 8)}/${dateStr.substring(4, 6)}/${dateStr.substring(0, 4)}`;
+      }
+
+      transactions.push({
+        type: type,
+        date: formattedDate,
+        amount: amount,
+        memo: memo
+      });
+    }
+
+    if (transactions.length === 0) {
+      throw new Error("Nenhuma transação encontrada no arquivo OFX.");
+    }
+
+    const installments = getInstallments();
+    const members = getMembers();
+    const cashFlow = getCashFlow();
+    
+    const results = {
+      identified: [],
+      others: [],
+      duplicates: [],
+      summary: { total: transactions.length, matched: 0, addedToCashflow: 0, ignored: 0 }
+    };
+
+    transactions.forEach(trn => {
+      // Verificar se já existe no Fluxo de Caixa (Duplicata)
+      const isDuplicate = cashFlow.some(cf => 
+        cf.data === trn.date && 
+        Math.abs(Number(cf.valor) - Math.abs(trn.amount)) < 0.01 &&
+        (cf.descricao.includes(trn.memo) || trn.memo.includes(cf.descricao) || cf.descricao.includes("RECEBIMENTO"))
+      );
+
+      if (isDuplicate) {
+        results.duplicates.push(trn);
+        results.summary.ignored++;
+        return;
+      }
+
+      // 1. Tenta por ID Direto (P... PV... P1... P2...)
+      const idMatch = trn.memo.match(/(PV|P1|P2|P)\d+/i);
+      const chargeId = idMatch ? idMatch[0].toUpperCase() : null;
+      
+      let installment = chargeId ? installments.find(i => i.id === chargeId) : null;
+
+      // 2. Fallback por CPF ou Nome + Valor
+      if (!installment && trn.amount > 0) {
+        const cpfMatch = trn.memo.replace(/\D/g, "").match(/\d{11}/);
+        const cpf = cpfMatch ? cpfMatch[0] : null;
+        
+        let foundMember = null;
+        if (cpf) {
+          foundMember = members.find(m => m.cpf && String(m.cpf).replace(/\D/g, "") === cpf);
+        }
+        
+        if (!foundMember) {
+          foundMember = members.find(m => m.nome && trn.memo.toUpperCase().includes(String(m.nome).toUpperCase()));
+        }
+
+        if (foundMember) {
+          const possibleInstallments = installments.filter(i => 
+            i.memberid == foundMember.id && 
+            i.status === 'PENDING' && 
+            Math.abs(Number(i.valor) - trn.amount) < 0.02
+          );
+          
+          if (possibleInstallments.length === 1) {
+            installment = possibleInstallments[0];
+          }
+        }
+      }
+
+      if (installment && installment.status === 'PENDING') {
+        results.identified.push({
+          ...trn,
+          chargeId: installment.id,
+          memberName: installment.member_name,
+          description: installment.descricao,
+          status: 'MATCHED'
+        });
+        results.summary.matched++;
+      } else {
+        results.others.push({
+          ...trn,
+          status: 'CASHFLOW'
+        });
+        results.summary.addedToCashflow++;
+      }
+    });
+
+    return results;
+  } catch (e) {
+    console.error("Erro no processOFX: " + e.message);
+    throw e;
+  }
+}
+
+function executeReconciliation(data) {
+  // 1. Processar os identificados (Baixa de Boletos)
+  if (data.identified) {
+    data.identified.forEach(item => {
+      updateInstallmentStatus(item.chargeId, 'PAID');
+    });
+  }
+
+  // 2. Processar os outros (Lançamento direto no Fluxo de Caixa)
+  if (data.others) {
+    data.others.forEach(item => {
+      const type = item.amount > 0 ? 'ENTRADA' : 'SAIDA';
+      saveCashFlowEntry({
+        description: "EXTRATO: " + item.memo,
+        amount: Math.abs(item.amount),
+        type: type,
+        date: item.date.split('/').reverse().join('-')
+      });
+    });
+  }
+
+  return { success: true };
+}
