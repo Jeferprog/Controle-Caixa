@@ -594,13 +594,19 @@ function saveUser(data) {
     for (let i = 1; i < rows.length; i++) {
       if (rows[i][0] == data.id) {
         sheet.getRange(i + 1, 2).setValue(data.username);
-        sheet.getRange(i + 1, 3).setValue(data.password);
+        // Só atualiza a senha se o campo veio preenchido; senão preserva a atual
+        if (data.password !== undefined && data.password !== null && String(data.password).length > 0) {
+          sheet.getRange(i + 1, 3).setValue(data.password);
+        }
         sheet.getRange(i + 1, 4).setValue(data.name);
         sheet.getRange(i + 1, 5).setValue(data.role);
         break;
       }
     }
   } else {
+    if (!data.password || String(data.password).length === 0) {
+      throw new Error("A senha é obrigatória ao criar um novo usuário.");
+    }
     const id = new Date().getTime();
     sheet.appendRow([id, data.username, data.password, data.name, data.role || 'USER']);
   }

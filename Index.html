@@ -450,7 +450,7 @@
 
     const UserModal = ({ onSave, onCancel, user = null }) => {
       const [username, setUsername] = useState(user ? user.usuario : '');
-      const [password, setPassword] = useState(user ? user.senha : '');
+      const [password, setPassword] = useState('');
       const [name, setName] = useState(user ? user.nome : '');
       const [role, setRole] = useState(user ? user.role : 'USER');
 
@@ -467,7 +467,13 @@
               <div className="space-y-4">
                 <Input label="Nome" value={name} onChange={e => setName(e.target.value)} placeholder="Nome do Usuário" />
                 <Input label="Login" value={username} onChange={e => setUsername(e.target.value)} placeholder="Usuário" />
-                <Input label="Senha" type="password" value={password} onChange={e => setPassword(e.target.value)} placeholder="Senha" />
+                <Input
+                  label={user ? 'Nova Senha (deixe em branco para manter)' : 'Senha'}
+                  type="password"
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  placeholder={user ? '••••••••' : 'Senha'}
+                />
                 <Select label="Nível de Acesso" value={role} onChange={e => setRole(e.target.value)}>
                   <option value="USER">Usuário Comum</option>
                   <option value="ADMIN">Administrador</option>
@@ -2257,13 +2263,14 @@
                 user={editingUser}
                 onCancel={() => { setShowUserModal(false); setEditingUser(null); }} 
                 onSave={async (data) => {
-                  if(!data.username || !data.password || !data.name) return showToast("Preencha todos os campos", "error");
+                  if (!data.username || !data.name) return showToast("Preencha usuário e nome", "error");
+                  if (!data.id && !data.password) return showToast("Informe uma senha para o novo usuário", "error");
                   await run('saveUser', data);
                   showToast(data.id ? "Usuário atualizado!" : "Usuário cadastrado!");
                   setShowUserModal(false);
                   setEditingUser(null);
                   loadAll();
-                }} 
+                }}
               />
             )}
           </main>
